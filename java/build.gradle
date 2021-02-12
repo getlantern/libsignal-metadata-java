@@ -22,6 +22,7 @@ group            = group_info
 repositories {
     mavenCentral()
     mavenLocal()
+    maven { url "https://www.jitpack.io" }
 }
 
 sourceSets {
@@ -33,10 +34,10 @@ sourceSets {
 }
 
 dependencies {
-    compile "org.whispersystems:signal-protocol-java:${protocol_version}"
-    compile 'com.google.protobuf:protobuf-javalite:3.10.0'
+    implementation 'com.github.getlantern:libsignal-protocol-java:c6a1f98'
+    implementation 'com.google.protobuf:protobuf-javalite:3.10.0'
 
-    testCompile ('junit:junit:3.8.2')
+    testImplementation ('junit:junit:4.12')
 }
 
 protobuf {
@@ -56,6 +57,7 @@ protobuf {
 
 sourceSets {
     main.proto.srcDir '../protobuf'
+    main.java.srcDirs += 'build/generated/source/proto/main/java' // this is a hack to get Android Studio to recognize the generated protocol buffer classes
 }
 
 test {
@@ -81,10 +83,10 @@ uploadArchives {
     repositories.mavenDeployer {
         beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
 
-        repository(url: sonatypeRepo) {
-            authentication(userName: whisperSonatypeUsername, password: whisperSonatypePassword)
-        }
-
+//        repository(url: sonatypeRepo) {
+//            authentication(userName: whisperSonatypeUsername, password: whisperSonatypePassword)
+//        }
+//
         pom.project {
             name 'signal-metadata-java'
             packaging 'jar'

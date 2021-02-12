@@ -1,11 +1,11 @@
 package org.signal.libsignal.metadata;
 
 
-import org.signal.libsignal.metadata.certificate.CertificateValidator;
-import org.signal.libsignal.metadata.certificate.InvalidCertificateException;
-import org.signal.libsignal.metadata.certificate.SenderCertificate;
+import org.signal.libsignal.metadata.encoding.UserId;
 import org.signal.libsignal.metadata.protocol.UnidentifiedSenderMessage;
 import org.signal.libsignal.metadata.protocol.UnidentifiedSenderMessageContent;
+import org.signal.libsignal.metadata.signedaddress.InvalidAddressException;
+import org.signal.libsignal.metadata.signedaddress.SignedAddress;
 import org.whispersystems.libsignal.DuplicateMessageException;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
@@ -28,13 +28,12 @@ import org.whispersystems.libsignal.protocol.PreKeySignalMessage;
 import org.whispersystems.libsignal.protocol.SignalMessage;
 import org.whispersystems.libsignal.state.SignalProtocolStore;
 import org.whispersystems.libsignal.util.ByteUtil;
-import org.whispersystems.libsignal.util.guava.Optional;
 
 import java.security.InvalidAlgorithmParameterException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.ParseException;
-import java.util.UUID;
+import java.util.Arrays;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -49,102 +48,87 @@ public class SealedSessionCipher {
   private static final String TAG = SealedSessionCipher.class.getSimpleName();
 
   private final SignalProtocolStore signalProtocolStore;
-  private final String              localE164Address;
-  private final String              localUuidAddress;
-  private final int                 localDeviceId;
+  private final int localDeviceId;
 
   public SealedSessionCipher(SignalProtocolStore signalProtocolStore,
-                             UUID localUuid,
-                             String localE164Address,
-                             int localDeviceId)
-  {
+                             int localDeviceId) {
     this.signalProtocolStore = signalProtocolStore;
-    this.localUuidAddress    = localUuid != null ? localUuid.toString() : null;
-    this.localE164Address    = localE164Address;
-    this.localDeviceId       = localDeviceId;
+    this.localDeviceId = localDeviceId;
   }
 
-  public byte[] encrypt(SignalProtocolAddress destinationAddress, SenderCertificate senderCertificate, byte[] paddedPlaintext)
-      throws InvalidKeyException, UntrustedIdentityException
-  {
-    CiphertextMessage message       = new SessionCipher(signalProtocolStore, destinationAddress).encrypt(paddedPlaintext);
-    IdentityKeyPair   ourIdentity   = signalProtocolStore.getIdentityKeyPair();
-    ECPublicKey       theirIdentity = signalProtocolStore.getIdentity(destinationAddress).getPublicKey();
+  public byte[] encrypt(SignalProtocolAddress destinationAddress, byte[] paddedPlaintext)
+          throws InvalidKeyException, UntrustedIdentityException {
+    return encrypt(signalProtocolStore.getIdentityKeyPair(), destinationAddress, paddedPlaintext);
+  }
 
-    ECKeyPair     ephemeral           = Curve.generateKeyPair();
-    byte[]        ephemeralSalt       = ByteUtil.combine("UnidentifiedDelivery".getBytes(), theirIdentity.serialize(), ephemeral.getPublicKey().serialize());
-    EphemeralKeys ephemeralKeys       = calculateEphemeralKeys(theirIdentity, ephemeral.getPrivateKey(), ephemeralSalt);
-    byte[]        staticKeyCiphertext = encrypt(ephemeralKeys.cipherKey, ephemeralKeys.macKey, ourIdentity.getPublicKey().getPublicKey().serialize());
+  byte[] encrypt(IdentityKeyPair ourIdentity, SignalProtocolAddress destinationAddress, byte[] paddedPlaintext)
+          throws InvalidKeyException, UntrustedIdentityException {
+    CiphertextMessage message = new SessionCipher(signalProtocolStore, destinationAddress).encrypt(paddedPlaintext);
+    ECPublicKey theirIdentity = signalProtocolStore.getIdentity(destinationAddress).getPublicKey();
 
-    byte[]                           staticSalt   = ByteUtil.combine(ephemeralKeys.chainKey, staticKeyCiphertext);
-    StaticKeys                       staticKeys   = calculateStaticKeys(theirIdentity, ourIdentity.getPrivateKey(), staticSalt);
-    UnidentifiedSenderMessageContent content      = new UnidentifiedSenderMessageContent(message.getType(), senderCertificate, message.serialize());
-    byte[]                           messageBytes = encrypt(staticKeys.cipherKey, staticKeys.macKey, content.getSerialized());
+    ECKeyPair ephemeral = Curve.generateKeyPair();
+    byte[] ephemeralSalt = ByteUtil.combine("UnidentifiedDelivery".getBytes(), theirIdentity.serialize(), ephemeral.getPublicKey().serialize());
+    EphemeralKeys ephemeralKeys = calculateEphemeralKeys(theirIdentity, ephemeral.getPrivateKey(), ephemeralSalt);
+    byte[] staticKeyCiphertext = encrypt(ephemeralKeys.cipherKey, ephemeralKeys.macKey, ourIdentity.getPublicKey().getPublicKey().serialize());
+
+    SignedAddress signedAddress = new SignedAddress(ourIdentity.getPublicKey().serialize(), this.localDeviceId, ourIdentity.getPrivateKey());
+    byte[] staticSalt = ByteUtil.combine(ephemeralKeys.chainKey, staticKeyCiphertext);
+    StaticKeys staticKeys = calculateStaticKeys(theirIdentity, ourIdentity.getPrivateKey(), staticSalt);
+    UnidentifiedSenderMessageContent content = new UnidentifiedSenderMessageContent(message.getType(), signedAddress, message.serialize());
+    byte[] messageBytes = encrypt(staticKeys.cipherKey, staticKeys.macKey, content.getSerialized());
 
     return new UnidentifiedSenderMessage(ephemeral.getPublicKey(), staticKeyCiphertext, messageBytes).getSerialized();
   }
 
-  public DecryptionResult decrypt(CertificateValidator validator, byte[] ciphertext, long timestamp)
-      throws
-      InvalidMetadataMessageException, InvalidMetadataVersionException,
-      ProtocolInvalidMessageException, ProtocolInvalidKeyException,
-      ProtocolNoSessionException, ProtocolLegacyMessageException,
-      ProtocolInvalidVersionException, ProtocolDuplicateMessageException,
-      ProtocolInvalidKeyIdException, ProtocolUntrustedIdentityException,
-      SelfSendException
-  {
+  public DecryptionResult decrypt(byte[] ciphertext)
+          throws
+          InvalidMetadataMessageException, InvalidMetadataVersionException,
+          ProtocolInvalidMessageException, ProtocolInvalidKeyException,
+          ProtocolNoSessionException, ProtocolLegacyMessageException,
+          ProtocolInvalidVersionException, ProtocolDuplicateMessageException,
+          ProtocolInvalidKeyIdException, ProtocolUntrustedIdentityException,
+          SelfSendException {
     UnidentifiedSenderMessageContent content;
 
     try {
-      IdentityKeyPair           ourIdentity    = signalProtocolStore.getIdentityKeyPair();
-      UnidentifiedSenderMessage wrapper        = new UnidentifiedSenderMessage(ciphertext);
-      byte[]                    ephemeralSalt  = ByteUtil.combine("UnidentifiedDelivery".getBytes(), ourIdentity.getPublicKey().getPublicKey().serialize(), wrapper.getEphemeral().serialize());
-      EphemeralKeys             ephemeralKeys  = calculateEphemeralKeys(wrapper.getEphemeral(), ourIdentity.getPrivateKey(), ephemeralSalt);
-      byte[]                    staticKeyBytes = decrypt(ephemeralKeys.cipherKey, ephemeralKeys.macKey, wrapper.getEncryptedStatic());
+      IdentityKeyPair ourIdentity = signalProtocolStore.getIdentityKeyPair();
+      UnidentifiedSenderMessage wrapper = new UnidentifiedSenderMessage(ciphertext);
+      byte[] ephemeralSalt = ByteUtil.combine("UnidentifiedDelivery".getBytes(), ourIdentity.getPublicKey().getPublicKey().serialize(), wrapper.getEphemeral().serialize());
+      EphemeralKeys ephemeralKeys = calculateEphemeralKeys(wrapper.getEphemeral(), ourIdentity.getPrivateKey(), ephemeralSalt);
+      byte[] staticKeyBytes = decrypt(ephemeralKeys.cipherKey, ephemeralKeys.macKey, wrapper.getEncryptedStatic());
 
-      ECPublicKey staticKey    = Curve.decodePoint(staticKeyBytes, 0);
-      byte[]      staticSalt   = ByteUtil.combine(ephemeralKeys.chainKey, wrapper.getEncryptedStatic());
-      StaticKeys  staticKeys   = calculateStaticKeys(staticKey, ourIdentity.getPrivateKey(), staticSalt);
-      byte[]      messageBytes = decrypt(staticKeys.cipherKey, staticKeys.macKey, wrapper.getEncryptedMessage());
+      ECPublicKey staticKey = Curve.decodePoint(staticKeyBytes, 0);
+      byte[] staticSalt = ByteUtil.combine(ephemeralKeys.chainKey, wrapper.getEncryptedStatic());
+      StaticKeys staticKeys = calculateStaticKeys(staticKey, ourIdentity.getPrivateKey(), staticSalt);
+      byte[] messageBytes = decrypt(staticKeys.cipherKey, staticKeys.macKey, wrapper.getEncryptedMessage());
 
       content = new UnidentifiedSenderMessageContent(messageBytes);
-      validator.validate(content.getSenderCertificate(), timestamp);
-
-      if (!MessageDigest.isEqual(content.getSenderCertificate().getKey().serialize(), staticKeyBytes)) {
-        throw new InvalidKeyException("Sender's certificate key does not match key used in message");
-      }
-
-      boolean isLocalE164 = localE164Address != null && localE164Address.equals(content.getSenderCertificate().getSenderE164().orNull());
-      boolean isLocalUuid = localUuidAddress != null && localUuidAddress.equals(content.getSenderCertificate().getSenderUuid().orNull());
-
-      if ((isLocalE164 || isLocalUuid) && content.getSenderCertificate().getSenderDeviceId() == localDeviceId) {
+      if (Arrays.equals(ourIdentity.getPublicKey().serialize(), content.getSignedAddress().getUserId())) {
         throw new SelfSendException();
       }
-    } catch (InvalidKeyException | InvalidMacException | InvalidCertificateException e) {
+    } catch (InvalidKeyException | InvalidMacException | InvalidAddressException e) {
       throw new InvalidMetadataMessageException(e);
     }
 
     try {
-      return new DecryptionResult(content.getSenderCertificate().getSenderUuid(),
-                                  content.getSenderCertificate().getSenderE164(),
-                                  content.getSenderCertificate().getSenderDeviceId(),
-                                  decrypt(content));
+      return new DecryptionResult(content.getSignedAddress().getSenderAddress(),
+              decrypt(content));
     } catch (InvalidMessageException e) {
-      throw new ProtocolInvalidMessageException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolInvalidMessageException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     } catch (InvalidKeyException e) {
-      throw new ProtocolInvalidKeyException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolInvalidKeyException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     } catch (NoSessionException e) {
-      throw new ProtocolNoSessionException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolNoSessionException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     } catch (LegacyMessageException e) {
-      throw new ProtocolLegacyMessageException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolLegacyMessageException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     } catch (InvalidVersionException e) {
-      throw new ProtocolInvalidVersionException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolInvalidVersionException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     } catch (DuplicateMessageException e) {
-      throw new ProtocolDuplicateMessageException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolDuplicateMessageException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     } catch (InvalidKeyIdException e) {
-      throw new ProtocolInvalidKeyIdException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolInvalidKeyIdException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     } catch (UntrustedIdentityException e) {
-      throw new ProtocolUntrustedIdentityException(e, content.getSenderCertificate().getSender(), content.getSenderCertificate().getSenderDeviceId());
+      throw new ProtocolUntrustedIdentityException(e, content.getSignedAddress().getSender(), content.getSignedAddress().getSenderDeviceId());
     }
   }
 
@@ -158,8 +142,8 @@ public class SealedSessionCipher {
 
   private EphemeralKeys calculateEphemeralKeys(ECPublicKey ephemeralPublic, ECPrivateKey ephemeralPrivate, byte[] salt) throws InvalidKeyException {
     try {
-      byte[]   ephemeralSecret       = Curve.calculateAgreement(ephemeralPublic, ephemeralPrivate);
-      byte[]   ephemeralDerived      = new HKDFv3().deriveSecrets(ephemeralSecret, salt, new byte[0], 96);
+      byte[] ephemeralSecret = Curve.calculateAgreement(ephemeralPublic, ephemeralPrivate);
+      byte[] ephemeralDerived = new HKDFv3().deriveSecrets(ephemeralSecret, salt, new byte[0], 96);
       byte[][] ephemeralDerivedParts = ByteUtil.split(ephemeralDerived, 32, 32, 32);
 
       return new EphemeralKeys(ephemeralDerivedParts[0], ephemeralDerivedParts[1], ephemeralDerivedParts[2]);
@@ -170,9 +154,9 @@ public class SealedSessionCipher {
 
   private StaticKeys calculateStaticKeys(ECPublicKey staticPublic, ECPrivateKey staticPrivate, byte[] salt) throws InvalidKeyException {
     try {
-      byte[]      staticSecret       = Curve.calculateAgreement(staticPublic, staticPrivate);
-      byte[]      staticDerived      = new HKDFv3().deriveSecrets(staticSecret, salt, new byte[0], 96);
-      byte[][]    staticDerivedParts = ByteUtil.split(staticDerived, 32, 32, 32);
+      byte[] staticSecret = Curve.calculateAgreement(staticPublic, staticPrivate);
+      byte[] staticDerived = new HKDFv3().deriveSecrets(staticSecret, salt, new byte[0], 96);
+      byte[][] staticDerivedParts = ByteUtil.split(staticDerived, 32, 32, 32);
 
       return new StaticKeys(staticDerivedParts[1], staticDerivedParts[2]);
     } catch (ParseException e) {
@@ -181,14 +165,21 @@ public class SealedSessionCipher {
   }
 
   private byte[] decrypt(UnidentifiedSenderMessageContent message)
-      throws InvalidVersionException, InvalidMessageException, InvalidKeyException, DuplicateMessageException, InvalidKeyIdException, UntrustedIdentityException, LegacyMessageException, NoSessionException
-  {
-    SignalProtocolAddress sender = getPreferredAddress(signalProtocolStore, message.getSenderCertificate());
+          throws InvalidVersionException, InvalidMessageException, InvalidKeyException, DuplicateMessageException, InvalidKeyIdException, UntrustedIdentityException, LegacyMessageException, NoSessionException {
+    SignalProtocolAddress sender = message.getSignedAddress().getSenderAddress();
 
     switch (message.getType()) {
-      case CiphertextMessage.WHISPER_TYPE: return new SessionCipher(signalProtocolStore, sender).decrypt(new SignalMessage(message.getContent()));
-      case CiphertextMessage.PREKEY_TYPE:  return new SessionCipher(signalProtocolStore, sender).decrypt(new PreKeySignalMessage(message.getContent()));
-      default:                             throw new InvalidMessageException("Unknown type: " + message.getType());
+      case CiphertextMessage.WHISPER_TYPE:
+        return new SessionCipher(signalProtocolStore, sender).decrypt(new SignalMessage(message.getContent()));
+      case CiphertextMessage.PREKEY_TYPE: {
+        PreKeySignalMessage signalMessage = new PreKeySignalMessage(message.getContent());
+        if (!Arrays.equals(UserId.decodeFromString(sender.getName()), signalMessage.getIdentityKey().getPublicKey().serialize())) {
+          throw new InvalidKeyException("PreKeySignalMessage identity key does not matcher sending userId");
+        }
+        return new SessionCipher(signalProtocolStore, sender).decrypt(signalMessage);
+      }
+      default:
+        throw new InvalidMessageException("Unknown type: " + message.getType());
     }
   }
 
@@ -202,7 +193,7 @@ public class SealedSessionCipher {
 
       byte[] ciphertext = cipher.doFinal(plaintext);
       byte[] ourFullMac = mac.doFinal(ciphertext);
-      byte[] ourMac     = ByteUtil.trim(ourFullMac, 10);
+      byte[] ourMac = ByteUtil.trim(ourFullMac, 10);
 
       return ByteUtil.combine(ciphertext, ourMac);
     } catch (NoSuchAlgorithmException | NoSuchPaddingException | java.security.InvalidKeyException | BadPaddingException | IllegalBlockSizeException | InvalidAlgorithmParameterException e) {
@@ -221,8 +212,8 @@ public class SealedSessionCipher {
       Mac mac = Mac.getInstance("HmacSHA256");
       mac.init(macKey);
 
-      byte[] digest   = mac.doFinal(ciphertextParts[0]);
-      byte[] ourMac   = ByteUtil.trim(digest, 10);
+      byte[] digest = mac.doFinal(ciphertextParts[0]);
+      byte[] ourMac = ByteUtil.trim(digest, 10);
       byte[] theirMac = ciphertextParts[1];
 
       if (!MessageDigest.isEqual(ourMac, theirMac)) {
@@ -238,42 +229,17 @@ public class SealedSessionCipher {
     }
   }
 
-  private static SignalProtocolAddress getPreferredAddress(SignalProtocolStore store, SenderCertificate certificate) {
-    SignalProtocolAddress uuidAddress = certificate.getSenderUuid().isPresent() ? new SignalProtocolAddress(certificate.getSenderUuid().get(), certificate.getSenderDeviceId()) : null;
-    SignalProtocolAddress e164Address = certificate.getSenderE164().isPresent() ? new SignalProtocolAddress(certificate.getSenderE164().get(), certificate.getSenderDeviceId()) : null;
-
-    if (uuidAddress != null && store.containsSession(uuidAddress)) {
-      return uuidAddress;
-    } else if (e164Address != null && store.containsSession(e164Address)) {
-      return e164Address;
-    } else {
-      return new SignalProtocolAddress(certificate.getSender(), certificate.getSenderDeviceId());
-    }
-  }
-
   public static class DecryptionResult {
-    private final Optional<String> senderUuid;
-    private final Optional<String> senderE164;
-    private final int              deviceId;
-    private final byte[]           paddedMessage;
+    private final SignalProtocolAddress senderAddress;
+    private final byte[] paddedMessage;
 
-    private DecryptionResult(Optional<String> senderUuid, Optional<String> senderE164, int deviceId, byte[] paddedMessage) {
-      this.senderUuid    = senderUuid;
-      this.senderE164    = senderE164;
-      this.deviceId      = deviceId;
+    private DecryptionResult(SignalProtocolAddress senderAddress, byte[] paddedMessage) {
+      this.senderAddress = senderAddress;
       this.paddedMessage = paddedMessage;
     }
 
-    public Optional<String> getSenderUuid() {
-      return senderUuid;
-    }
-
-    public Optional<String> getSenderE164() {
-      return senderE164;
-    }
-
-    public int getDeviceId() {
-      return deviceId;
+    public SignalProtocolAddress getSenderAddress() {
+      return senderAddress;
     }
 
     public byte[] getPaddedMessage() {
@@ -282,14 +248,14 @@ public class SealedSessionCipher {
   }
 
   private static class EphemeralKeys {
-    private final byte[]        chainKey;
+    private final byte[] chainKey;
     private final SecretKeySpec cipherKey;
     private final SecretKeySpec macKey;
 
     private EphemeralKeys(byte[] chainKey, byte[] cipherKey, byte[] macKey) {
-      this.chainKey  = chainKey;
+      this.chainKey = chainKey;
       this.cipherKey = new SecretKeySpec(cipherKey, "AES");
-      this.macKey    = new SecretKeySpec(macKey, "HmacSHA256");
+      this.macKey = new SecretKeySpec(macKey, "HmacSHA256");
     }
   }
 
@@ -299,8 +265,7 @@ public class SealedSessionCipher {
 
     private StaticKeys(byte[] cipherKey, byte[] macKey) {
       this.cipherKey = new SecretKeySpec(cipherKey, "AES");
-      this.macKey    = new SecretKeySpec(macKey, "HmacSHA256");
+      this.macKey = new SecretKeySpec(macKey, "HmacSHA256");
     }
   }
-
 }

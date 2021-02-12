@@ -1,15 +1,9 @@
 package org.signal.libsignal.metadata;
 
-import com.google.protobuf.ByteString;
-import com.google.protobuf.InvalidProtocolBufferException;
-
 import junit.framework.TestCase;
 
 import org.signal.libsignal.metadata.SealedSessionCipher.DecryptionResult;
-import org.signal.libsignal.metadata.certificate.CertificateValidator;
-import org.signal.libsignal.metadata.certificate.InvalidCertificateException;
-import org.signal.libsignal.metadata.certificate.SenderCertificate;
-import org.signal.libsignal.metadata.certificate.ServerCertificate;
+import org.signal.libsignal.metadata.encoding.UserId;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.SessionBuilder;
@@ -17,164 +11,140 @@ import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.UntrustedIdentityException;
 import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECKeyPair;
-import org.whispersystems.libsignal.ecc.ECPublicKey;
 import org.whispersystems.libsignal.state.PreKeyBundle;
 import org.whispersystems.libsignal.state.PreKeyRecord;
 import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.libsignal.util.KeyHelper;
-import org.whispersystems.libsignal.util.Pair;
-
-import java.util.UUID;
 
 public class SealedSessionCipherTest extends TestCase {
+  private static final int staticDeviceId = 1;
 
-  public void testEncryptDecrypt() throws UntrustedIdentityException, InvalidKeyException, InvalidCertificateException, InvalidProtocolBufferException, InvalidMetadataMessageException, ProtocolDuplicateMessageException, ProtocolUntrustedIdentityException, ProtocolLegacyMessageException, ProtocolInvalidKeyException, InvalidMetadataVersionException, ProtocolInvalidVersionException, ProtocolInvalidMessageException, ProtocolInvalidKeyIdException, ProtocolNoSessionException, SelfSendException {
-    TestInMemorySignalProtocolStore aliceStore = new TestInMemorySignalProtocolStore();
-    TestInMemorySignalProtocolStore bobStore   = new TestInMemorySignalProtocolStore();
+  public void testEncryptDecryptSuccess() throws Exception {
+    TestInMemorySignalProtocolStore aliceStore         = new TestInMemorySignalProtocolStore();
+    TestInMemorySignalProtocolStore bobStore           = new TestInMemorySignalProtocolStore();
+    TestInMemorySignalProtocolStore trustedBadGuyStore = new TestInMemorySignalProtocolStore();
+    TestInMemorySignalProtocolStore unknownBadGuyStore = new TestInMemorySignalProtocolStore();
 
-    initializeSessions(aliceStore, bobStore);
+    String aliceUserId = UserId.encodeToString(aliceStore.getIdentityKeyPair().getPublicKey().serialize());
+    SignalProtocolAddress aliceAddress = new SignalProtocolAddress(aliceUserId, staticDeviceId);
+    String bobUserId = UserId.encodeToString(bobStore.getIdentityKeyPair().getPublicKey().serialize());
+    SignalProtocolAddress bobAddress = new SignalProtocolAddress(bobUserId, staticDeviceId);
+    String trustedBadGuyUserID = UserId.encodeToString(trustedBadGuyStore.getIdentityKeyPair().getPublicKey().serialize());
+    SignalProtocolAddress trustedBadGuyAddress = new SignalProtocolAddress(trustedBadGuyUserID, staticDeviceId);
+    String unknownBadGuyUserID = UserId.encodeToString(unknownBadGuyStore.getIdentityKeyPair().getPublicKey().serialize());
+    SignalProtocolAddress unknownBadGuyAddress = new SignalProtocolAddress(unknownBadGuyUserID, staticDeviceId);
 
-    ECKeyPair           trustRoot         = Curve.generateKeyPair();
-    SenderCertificate   senderCertificate = createCertificateFor(trustRoot, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1, aliceStore.getIdentityKeyPair().getPublicKey().getPublicKey(), 31337);
-    SealedSessionCipher aliceCipher       = new SealedSessionCipher(aliceStore, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1);
+    initializeSessions(bobStore, aliceStore, trustedBadGuyStore);
 
-    byte[] ciphertext = aliceCipher.encrypt(new SignalProtocolAddress("+14152222222", 1),
-                                            senderCertificate, "smert za smert".getBytes());
+    SealedSessionCipher aliceCipher         = new SealedSessionCipher(aliceStore, staticDeviceId);
+    SealedSessionCipher bobCipher           = new SealedSessionCipher(bobStore, staticDeviceId);
+    SealedSessionCipher trustedBadGuyCipher = new SealedSessionCipher(trustedBadGuyStore, staticDeviceId);
+    SealedSessionCipher unknownBadGuyCipher = new SealedSessionCipher(trustedBadGuyStore, staticDeviceId);
 
+    bidirectionalMessageExchange(aliceAddress, aliceCipher, bobAddress, bobCipher);
 
-    SealedSessionCipher bobCipher = new SealedSessionCipher(bobStore, UUID.fromString("e80f7bbe-5b94-471e-bd8c-2173654ea3d1"), "+14152222222", 1);
-
-    DecryptionResult plaintext = bobCipher.decrypt(new CertificateValidator(trustRoot.getPublicKey()), ciphertext, 31335);
-
-    assertEquals(new String(plaintext.getPaddedMessage()), "smert za smert");
-    assertEquals(plaintext.getSenderUuid().get(), "9d0652a3-dcc3-4d11-975f-74d61598733f");
-    assertEquals(plaintext.getSenderE164().get(), "+14151111111");
-    assertEquals(plaintext.getDeviceId(), 1);
-  }
-
-  public void testEncryptDecryptUntrusted() throws Exception {
-    TestInMemorySignalProtocolStore aliceStore = new TestInMemorySignalProtocolStore();
-    TestInMemorySignalProtocolStore bobStore   = new TestInMemorySignalProtocolStore();
-
-    initializeSessions(aliceStore, bobStore);
-
-    ECKeyPair           trustRoot         = Curve.generateKeyPair();
-    ECKeyPair           falseTrustRoot    = Curve.generateKeyPair();
-    SenderCertificate   senderCertificate = createCertificateFor(falseTrustRoot, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1, aliceStore.getIdentityKeyPair().getPublicKey().getPublicKey(), 31337);
-    SealedSessionCipher aliceCipher       = new SealedSessionCipher(aliceStore, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1);
-
-    byte[] ciphertext = aliceCipher.encrypt(new SignalProtocolAddress("+14152222222", 1),
-                                            senderCertificate, "и вот я".getBytes());
-
-    SealedSessionCipher bobCipher = new SealedSessionCipher(bobStore, UUID.fromString("e80f7bbe-5b94-471e-bd8c-2173654ea3d1"), "+14152222222", 1);
-
+    /***********************************************************************************************
+     * The below test conditions test various forms of sender address spoofing, all of which should
+     * fail.
+     *
+     * 1. Someone unknown to Bob attempts to make it look like the message came from them (unknownBadGuy)
+     * 2. Someone known to Bob who hasn't yet successfully initiated a messaging session (trustedBadGuy)
+     * 3. Someone known to Bob who has successfully initiated a messaging session (trustedBadGuy)
+     **********************************************************************************************/
+    byte[] spoofedCiphertext = aliceCipher.encrypt(unknownBadGuyStore.getIdentityKeyPair(), bobAddress, "Someone unknown to Bob is spoofing Alice!".getBytes());
     try {
-      bobCipher.decrypt(new CertificateValidator(trustRoot.getPublicKey()), ciphertext, 31335);
-      throw new AssertionError();
-    } catch (InvalidMetadataMessageException e) {
-      // good
+      bobCipher.decrypt(spoofedCiphertext);
+      fail("should have failed to decrypt with unknown spoofed sender on regular encrypted message");
+    } catch (ProtocolNoSessionException e) {
+      // okay
+    }
+
+    spoofedCiphertext = aliceCipher.encrypt(trustedBadGuyStore.getIdentityKeyPair(), bobAddress, "Someone known to Bob who has not yet communicated with him is spoofing Alice!".getBytes());
+    try {
+      bobCipher.decrypt(spoofedCiphertext);
+      fail("should have failed to decrypt with trusted (but as yet not communicated) spoofed sender on regular encrypted message");
+    } catch (ProtocolNoSessionException e) {
+      // okay
+    }
+
+    bidirectionalMessageExchange(trustedBadGuyAddress, trustedBadGuyCipher, bobAddress, bobCipher);
+    spoofedCiphertext = aliceCipher.encrypt(trustedBadGuyStore.getIdentityKeyPair(), bobAddress, "Someone known to Bob who has previously communicated with him is spoofing Alice!".getBytes());
+    try {
+      bobCipher.decrypt(spoofedCiphertext);
+      fail("should have failed to decrypt with trusted and previously communicated spoofed sender on regular encrypted message");
+    } catch (ProtocolInvalidMessageException e) {
+      // okay
     }
   }
 
-  public void testEncryptDecryptExpired() throws Exception {
+  private void bidirectionalMessageExchange(SignalProtocolAddress senderAddress,
+                                            SealedSessionCipher senderCipher,
+                                            SignalProtocolAddress recipientAddress,
+                                            SealedSessionCipher recipientCipher) throws Exception {
+    byte[] ciphertext = senderCipher.encrypt(recipientAddress, "ping".getBytes());
+    DecryptionResult plaintext = recipientCipher.decrypt(ciphertext);
+    assertEquals(new String(plaintext.getPaddedMessage()), "ping");
+    assertEquals(plaintext.getSenderAddress(), senderAddress);
+
+    byte[] responseCiphertext = recipientCipher.encrypt(senderAddress, "pong".getBytes());
+    DecryptionResult responsePlaintext = senderCipher.decrypt(responseCiphertext);
+    assertEquals(new String(responsePlaintext.getPaddedMessage()), "pong");
+  }
+
+
+
+  /**
+   * This test simulates what would happen if an intermediary intercepts a session initiation message
+   * wrapped in a sealed sender message and replaces the sender with a different address. This should
+   * fail because the IdentityKey on the session initiation message doesn't match the spoofed sender
+   * address.
+   *
+   * @throws Exception
+   */
+  public void testSenderSpoofingFailsOnSessionInitiation() throws Exception {
     TestInMemorySignalProtocolStore aliceStore = new TestInMemorySignalProtocolStore();
     TestInMemorySignalProtocolStore bobStore   = new TestInMemorySignalProtocolStore();
+    TestInMemorySignalProtocolStore trustedBadGuyStore   = new TestInMemorySignalProtocolStore();
 
-    initializeSessions(aliceStore, bobStore);
+    String trustedBadGuyUserId = UserId.encodeToString(trustedBadGuyStore.getIdentityKeyPair().getPublicKey().serialize());
+    SignalProtocolAddress trustedBadGuyAddress = new SignalProtocolAddress(trustedBadGuyUserId, staticDeviceId);
+    String bobUserId = UserId.encodeToString(bobStore.getIdentityKeyPair().getPublicKey().serialize());
+    SignalProtocolAddress bobAddress = new SignalProtocolAddress(bobUserId, staticDeviceId);
+
+    initializeSessions(bobStore, aliceStore);
 
     ECKeyPair           trustRoot         = Curve.generateKeyPair();
-    SenderCertificate   senderCertificate = createCertificateFor(trustRoot, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1, aliceStore.getIdentityKeyPair().getPublicKey().getPublicKey(), 31337);
-    SealedSessionCipher aliceCipher       = new SealedSessionCipher(aliceStore, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1);
+    SealedSessionCipher aliceCipher       = new SealedSessionCipher(aliceStore, staticDeviceId);
+    byte[] ciphertext = aliceCipher.encrypt(trustedBadGuyStore.getIdentityKeyPair(), bobAddress, "smert za smert".getBytes());
 
-    byte[] ciphertext = aliceCipher.encrypt(new SignalProtocolAddress("+14152222222", 1),
-                                            senderCertificate, "и вот я".getBytes());
-
-    SealedSessionCipher bobCipher = new SealedSessionCipher(bobStore, UUID.fromString("e80f7bbe-5b94-471e-bd8c-2173654ea3d1"), "+14152222222", 1);
-
+    SealedSessionCipher bobCipher = new SealedSessionCipher(bobStore, staticDeviceId);
     try {
-      bobCipher.decrypt(new CertificateValidator(trustRoot.getPublicKey()), ciphertext, 31338);
-      throw new AssertionError();
-    } catch (InvalidMetadataMessageException e) {
-      // good
+      DecryptionResult plaintext = bobCipher.decrypt(ciphertext);
+      fail("should have failed to decrypt with spoofed sender on session initiation message");
+    } catch (Exception e) {
+      // "bad guy's identity should not be in Bob's store after failure to decrypt"
+      assertNull(bobStore.getIdentity(trustedBadGuyAddress));
     }
   }
 
-  public void testEncryptFromWrongIdentity() throws Exception {
-    TestInMemorySignalProtocolStore aliceStore = new TestInMemorySignalProtocolStore();
-    TestInMemorySignalProtocolStore bobStore   = new TestInMemorySignalProtocolStore();
-
-    initializeSessions(aliceStore, bobStore);
-
-    ECKeyPair           trustRoot         = Curve.generateKeyPair();
-    ECKeyPair           randomKeyPair     = Curve.generateKeyPair();
-    SenderCertificate   senderCertificate = createCertificateFor(trustRoot, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1, randomKeyPair.getPublicKey(), 31337);
-    SealedSessionCipher aliceCipher       = new SealedSessionCipher(aliceStore, UUID.fromString("9d0652a3-dcc3-4d11-975f-74d61598733f"), "+14151111111", 1);
-
-    byte[] ciphertext = aliceCipher.encrypt(new SignalProtocolAddress("+14152222222", 1),
-                                            senderCertificate, "smert za smert".getBytes());
-
-
-    SealedSessionCipher bobCipher = new SealedSessionCipher(bobStore, UUID.fromString("e80f7bbe-5b94-471e-bd8c-2173654ea3d1"), "+14152222222", 1);
-
-    try {
-      bobCipher.decrypt(new CertificateValidator(trustRoot.getPublicKey()), ciphertext, 31335);
-    } catch (InvalidMetadataMessageException e) {
-      // good
-    }
-  }
-
-
-
-  private SenderCertificate createCertificateFor(ECKeyPair trustRoot, UUID uuid, String e164, int deviceId, ECPublicKey identityKey, long expires)
-      throws InvalidKeyException, InvalidCertificateException, InvalidProtocolBufferException {
-    ECKeyPair serverKey = Curve.generateKeyPair();
-
-    byte[] serverCertificateBytes = SignalProtos.ServerCertificate.Certificate.newBuilder()
-                                                                              .setId(1)
-                                                                              .setKey(ByteString.copyFrom(serverKey.getPublicKey().serialize()))
-                                                                              .build()
-                                                                              .toByteArray();
-
-    byte[] serverCertificateSignature = Curve.calculateSignature(trustRoot.getPrivateKey(), serverCertificateBytes);
-
-    ServerCertificate serverCertificate = new ServerCertificate(SignalProtos.ServerCertificate.newBuilder()
-                                                                                              .setCertificate(ByteString.copyFrom(serverCertificateBytes))
-                                                                                              .setSignature(ByteString.copyFrom(serverCertificateSignature))
-                                                                                              .build()
-                                                                                              .toByteArray());
-
-    byte[] senderCertificateBytes = SignalProtos.SenderCertificate.Certificate.newBuilder()
-                                                                              .setSenderUuid(uuid.toString())
-                                                                              .setSenderE164(e164)
-                                                                              .setSenderDevice(deviceId)
-                                                                              .setIdentityKey(ByteString.copyFrom(identityKey.serialize()))
-                                                                              .setExpires(expires)
-                                                                              .setSigner(SignalProtos.ServerCertificate.parseFrom(serverCertificate.getSerialized()))
-                                                                              .build()
-                                                                              .toByteArray();
-
-    byte[] senderCertificateSignature = Curve.calculateSignature(serverKey.getPrivateKey(), senderCertificateBytes);
-
-    return new SenderCertificate(SignalProtos.SenderCertificate.newBuilder()
-                                                               .setCertificate(ByteString.copyFrom(senderCertificateBytes))
-                                                               .setSignature(ByteString.copyFrom(senderCertificateSignature))
-                                                               .build()
-                                                               .toByteArray());
-  }
-
-  private void initializeSessions(TestInMemorySignalProtocolStore aliceStore, TestInMemorySignalProtocolStore bobStore)
+  private void initializeSessions(TestInMemorySignalProtocolStore recipientStore, TestInMemorySignalProtocolStore ...senderStores)
       throws InvalidKeyException, UntrustedIdentityException
   {
-    ECKeyPair          bobPreKey       = Curve.generateKeyPair();
-    IdentityKeyPair    bobIdentityKey  = bobStore.getIdentityKeyPair();
-    SignedPreKeyRecord bobSignedPreKey = KeyHelper.generateSignedPreKey(bobIdentityKey, 2);
+    int recipientRegistrationId              = 1;
+    int recipientSignedPreKeyId              = 2;
+    int recipientPreKeyId                    = 1;
+    IdentityKeyPair    recipientIdentityKey  = recipientStore.getIdentityKeyPair();
+    SignedPreKeyRecord recipientSignedPreKey = KeyHelper.generateSignedPreKey(recipientIdentityKey, recipientPreKeyId);
+    String recipientId = UserId.encodeToString(recipientStore.getIdentityKeyPair().getPublicKey().serialize());
+    recipientStore.storeSignedPreKey(recipientSignedPreKeyId, recipientSignedPreKey);
 
-    PreKeyBundle bobBundle             = new PreKeyBundle(1, 1, 1, bobPreKey.getPublicKey(), 2, bobSignedPreKey.getKeyPair().getPublicKey(), bobSignedPreKey.getSignature(), bobIdentityKey.getPublicKey());
-    SessionBuilder aliceSessionBuilder = new SessionBuilder(aliceStore, new SignalProtocolAddress("+14152222222", 1));
-    aliceSessionBuilder.process(bobBundle);
-
-    bobStore.storeSignedPreKey(2, bobSignedPreKey);
-    bobStore.storePreKey(1, new PreKeyRecord(1, bobPreKey));
-
+    for (TestInMemorySignalProtocolStore senderStore : senderStores) {
+      ECKeyPair          recipientPreKey       = Curve.generateKeyPair();
+      recipientStore.storePreKey(recipientPreKeyId, new PreKeyRecord(recipientPreKeyId, recipientPreKey));
+      PreKeyBundle bobBundle             = new PreKeyBundle(recipientRegistrationId, staticDeviceId, recipientPreKeyId, recipientPreKey.getPublicKey(), recipientSignedPreKeyId, recipientSignedPreKey.getKeyPair().getPublicKey(), recipientSignedPreKey.getSignature(), recipientIdentityKey.getPublicKey());
+      SessionBuilder aliceSessionBuilder = new SessionBuilder(senderStore, new SignalProtocolAddress(recipientId, staticDeviceId));
+      aliceSessionBuilder.process(bobBundle);
+      recipientPreKeyId++;
+    }
   }
 }

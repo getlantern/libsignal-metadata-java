@@ -6,23 +6,23 @@ import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.signal.libsignal.metadata.InvalidMetadataMessageException;
 import org.signal.libsignal.metadata.SignalProtos;
-import org.signal.libsignal.metadata.certificate.InvalidCertificateException;
-import org.signal.libsignal.metadata.certificate.SenderCertificate;
-import org.whispersystems.libsignal.InvalidMessageException;
+import org.signal.libsignal.metadata.signedaddress.InvalidAddressException;
+import org.signal.libsignal.metadata.signedaddress.SignedAddress;
+import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.protocol.CiphertextMessage;
 
 public class UnidentifiedSenderMessageContent {
 
   private final int               type;
-  private final SenderCertificate senderCertificate;
+  private final SignedAddress signedAddress;
   private final byte[]            content;
   private final byte[]            serialized;
 
-  public UnidentifiedSenderMessageContent(byte[] serialized) throws InvalidMetadataMessageException, InvalidCertificateException {
+  public UnidentifiedSenderMessageContent(byte[] serialized) throws InvalidMetadataMessageException, InvalidAddressException, InvalidKeyException {
     try {
       SignalProtos.UnidentifiedSenderMessage.Message message = SignalProtos.UnidentifiedSenderMessage.Message.parseFrom(serialized);
 
-      if (!message.hasType() || !message.hasSenderCertificate() || !message.hasContent()) {
+      if (!message.hasType() || !message.hasSignedSenderAddress() || !message.hasContent()) {
         throw new InvalidMetadataMessageException("Missing fields");
       }
 
@@ -32,7 +32,7 @@ public class UnidentifiedSenderMessageContent {
         default:             throw new InvalidMetadataMessageException("Unknown type: " + message.getType().getNumber());
       }
 
-      this.senderCertificate = new SenderCertificate(message.getSenderCertificate().toByteArray());
+      this.signedAddress = new SignedAddress(message.getSignedSenderAddress().toByteArray());
       this.content           = message.getContent().toByteArray();
       this.serialized        = serialized;
     } catch (InvalidProtocolBufferException e) {
@@ -40,17 +40,17 @@ public class UnidentifiedSenderMessageContent {
     }
   }
 
-  public UnidentifiedSenderMessageContent(int type, SenderCertificate senderCertificate, byte[] content) {
+  public UnidentifiedSenderMessageContent(int type, SignedAddress signedAddress, byte[] content) {
     try {
       this.serialized = SignalProtos.UnidentifiedSenderMessage.Message.newBuilder()
                                                                       .setType(SignalProtos.UnidentifiedSenderMessage.Message.Type.valueOf(getProtoType(type)))
-                                                                      .setSenderCertificate(SignalProtos.SenderCertificate.parseFrom(senderCertificate.getSerialized()))
+                                                                      .setSignedSenderAddress(SignalProtos.SignedAddress.parseFrom(signedAddress.getSerialized()))
                                                                       .setContent(ByteString.copyFrom(content))
                                                                       .build()
                                                                       .toByteArray();
 
       this.type = type;
-      this.senderCertificate = senderCertificate;
+      this.signedAddress = signedAddress;
       this.content = content;
     } catch (InvalidProtocolBufferException e) {
       throw new AssertionError(e);
@@ -61,8 +61,8 @@ public class UnidentifiedSenderMessageContent {
     return type;
   }
 
-  public SenderCertificate getSenderCertificate() {
-    return senderCertificate;
+  public SignedAddress getSignedAddress() {
+    return signedAddress;
   }
 
   public byte[] getContent() {

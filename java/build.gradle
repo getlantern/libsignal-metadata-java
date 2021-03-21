@@ -34,7 +34,7 @@ sourceSets {
 }
 
 dependencies {
-    implementation 'com.github.getlantern:libsignal-protocol-java:4f9e4e6'
+    implementation 'com.github.getlantern:libsignal-protocol-java:5c7d676'
     implementation 'com.google.protobuf:protobuf-javalite:3.10.0'
 
     testImplementation ('junit:junit:4.12')

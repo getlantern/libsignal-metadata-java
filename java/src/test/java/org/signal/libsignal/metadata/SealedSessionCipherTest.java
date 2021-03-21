@@ -140,7 +140,6 @@ public class SealedSessionCipherTest extends TestCase {
   private void initializeSessions(TestInMemorySignalProtocolStore recipientStore, TestInMemorySignalProtocolStore ...senderStores)
       throws InvalidKeyException
   {
-    int recipientRegistrationId              = 1;
     int recipientSignedPreKeyId              = 2;
     int recipientPreKeyId                    = 1;
     ECKeyPair          recipientIdentityKey  = recipientStore.getIdentityKeyPair();

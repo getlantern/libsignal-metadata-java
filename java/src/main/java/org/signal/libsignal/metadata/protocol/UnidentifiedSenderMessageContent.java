@@ -6,23 +6,25 @@ import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.signal.libsignal.metadata.InvalidMetadataMessageException;
 import org.signal.libsignal.metadata.SignalProtos;
-import org.signal.libsignal.metadata.certificate.InvalidCertificateException;
-import org.signal.libsignal.metadata.certificate.SenderCertificate;
-import org.whispersystems.libsignal.InvalidMessageException;
+import org.whispersystems.libsignal.DeviceId;
+import org.whispersystems.libsignal.InvalidKeyException;
+import org.whispersystems.libsignal.SignalProtocolAddress;
+import org.whispersystems.libsignal.ecc.ECPublicKey;
 import org.whispersystems.libsignal.protocol.CiphertextMessage;
 
 public class UnidentifiedSenderMessageContent {
 
-  private final int               type;
-  private final SenderCertificate senderCertificate;
-  private final byte[]            content;
-  private final byte[]            serialized;
+  private final int    type;
+  private final byte[] senderIdentityKey;
+  private final byte[] senderDeviceId;
+  private final byte[] content;
+  private final byte[] serialized;
 
-  public UnidentifiedSenderMessageContent(byte[] serialized) throws InvalidMetadataMessageException, InvalidCertificateException {
+  public UnidentifiedSenderMessageContent(byte[] serialized) throws InvalidMetadataMessageException {
     try {
       SignalProtos.UnidentifiedSenderMessage.Message message = SignalProtos.UnidentifiedSenderMessage.Message.parseFrom(serialized);
 
-      if (!message.hasType() || !message.hasSenderCertificate() || !message.hasContent()) {
+      if (!message.hasType() || !message.hasSenderIdentity() || !message.hasSenderDeviceId() || !message.hasContent()) {
         throw new InvalidMetadataMessageException("Missing fields");
       }
 
@@ -32,37 +34,56 @@ public class UnidentifiedSenderMessageContent {
         default:             throw new InvalidMetadataMessageException("Unknown type: " + message.getType().getNumber());
       }
 
-      this.senderCertificate = new SenderCertificate(message.getSenderCertificate().toByteArray());
-      this.content           = message.getContent().toByteArray();
-      this.serialized        = serialized;
+      this.senderIdentityKey = message.getSenderIdentity().toByteArray();
+      this.senderDeviceId = message.getSenderDeviceId().toByteArray();
+      this.content        = message.getContent().toByteArray();
+      this.serialized     = serialized;
     } catch (InvalidProtocolBufferException e) {
       throw new InvalidMetadataMessageException(e);
     }
   }
 
-  public UnidentifiedSenderMessageContent(int type, SenderCertificate senderCertificate, byte[] content) {
-    try {
-      this.serialized = SignalProtos.UnidentifiedSenderMessage.Message.newBuilder()
-                                                                      .setType(SignalProtos.UnidentifiedSenderMessage.Message.Type.valueOf(getProtoType(type)))
-                                                                      .setSenderCertificate(SignalProtos.SenderCertificate.parseFrom(senderCertificate.getSerialized()))
-                                                                      .setContent(ByteString.copyFrom(content))
-                                                                      .build()
-                                                                      .toByteArray();
+  public UnidentifiedSenderMessageContent(int type, byte[] senderIdentityKey, byte[] senderDeviceId, byte[] content) {
+    this.serialized = SignalProtos.UnidentifiedSenderMessage.Message.newBuilder()
+                                                                    .setType(SignalProtos.UnidentifiedSenderMessage.Message.Type.valueOf(getProtoType(type)))
+                                                                    .setSenderIdentity(ByteString.copyFrom(senderIdentityKey))
+                                                                    .setSenderDeviceId(ByteString.copyFrom(senderDeviceId))
+                                                                    .setContent(ByteString.copyFrom(content))
+                                                                    .build()
+                                                                    .toByteArray();
 
-      this.type = type;
-      this.senderCertificate = senderCertificate;
-      this.content = content;
-    } catch (InvalidProtocolBufferException e) {
-      throw new AssertionError(e);
-    }
+    this.type = type;
+    this.senderIdentityKey = senderIdentityKey;
+    this.senderDeviceId = senderDeviceId;
+    this.content = content;
   }
 
   public int getType() {
     return type;
   }
 
-  public SenderCertificate getSenderCertificate() {
-    return senderCertificate;
+  /**
+   * WARNING - for inbound messages, this sender identity key is just whatever the sender included
+   * in their message, it has not been verified yet. During decryption, if this address doesn't
+   * match the one that encrypted the message, the MAC check will fail.
+   * @return
+   */
+  public byte[] getSenderIdentityKey() {
+    return senderIdentityKey;
+  }
+
+  public byte[] getSenderDeviceId() {
+    return senderDeviceId;
+  }
+
+  /**
+   * WARNING - for inbound messages, this address is just whatever the sender included in their
+   * message, it has not been verified yet. During decryption, if this address doesn't match the one
+   * that encrypted the message, the MAC check will fail.
+   * @return
+   */
+  public SignalProtocolAddress getSenderAddress() throws InvalidKeyException {
+    return new SignalProtocolAddress(new ECPublicKey(senderIdentityKey), new DeviceId(senderDeviceId));
   }
 
   public byte[] getContent() {

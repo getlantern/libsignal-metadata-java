@@ -8,9 +8,6 @@ import org.signal.libsignal.metadata.InvalidMetadataMessageException;
 import org.signal.libsignal.metadata.InvalidMetadataVersionException;
 import org.signal.libsignal.metadata.SignalProtos;
 import org.whispersystems.libsignal.InvalidKeyException;
-import org.whispersystems.libsignal.InvalidMessageException;
-import org.whispersystems.libsignal.InvalidVersionException;
-import org.whispersystems.libsignal.ecc.Curve;
 import org.whispersystems.libsignal.ecc.ECPublicKey;
 import org.whispersystems.libsignal.util.ByteUtil;
 
@@ -43,7 +40,7 @@ public class UnidentifiedSenderMessage {
         throw new InvalidMetadataMessageException("Missing fields");
       }
 
-      this.ephemeral        = Curve.decodePoint(unidentifiedSenderMessage.getEphemeralPublic().toByteArray(), 0);
+      this.ephemeral        = new ECPublicKey(unidentifiedSenderMessage.getEphemeralPublic().toByteArray());
       this.encryptedStatic  = unidentifiedSenderMessage.getEncryptedStatic().toByteArray();
       this.encryptedMessage = unidentifiedSenderMessage.getEncryptedMessage().toByteArray();
       this.serialized       = serialized;
@@ -62,7 +59,7 @@ public class UnidentifiedSenderMessage {
     byte[] messageBytes = SignalProtos.UnidentifiedSenderMessage.newBuilder()
                                                                 .setEncryptedMessage(ByteString.copyFrom(encryptedMessage))
                                                                 .setEncryptedStatic(ByteString.copyFrom(encryptedStatic))
-                                                                .setEphemeralPublic(ByteString.copyFrom(ephemeral.serialize()))
+                                                                .setEphemeralPublic(ByteString.copyFrom(ephemeral.getBytes()))
                                                                 .build()
                                                                 .toByteArray();
 

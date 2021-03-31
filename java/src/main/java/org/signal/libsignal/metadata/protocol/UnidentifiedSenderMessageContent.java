@@ -62,6 +62,12 @@ public class UnidentifiedSenderMessageContent {
     return type;
   }
 
+  /**
+   * WARNING - for inbound messages, this sender identity key is just whatever the sender included
+   * in their message, it has not been verified yet. During decryption, if this address doesn't
+   * match the one that encrypted the message, the MAC check will fail.
+   * @return
+   */
   public byte[] getSenderIdentityKey() {
     return senderIdentityKey;
   }
@@ -70,6 +76,12 @@ public class UnidentifiedSenderMessageContent {
     return senderDeviceId;
   }
 
+  /**
+   * WARNING - for inbound messages, this address is just whatever the sender included in their
+   * message, it has not been verified yet. During decryption, if this address doesn't match the one
+   * that encrypted the message, the MAC check will fail.
+   * @return
+   */
   public SignalProtocolAddress getSenderAddress() throws InvalidKeyException {
     return new SignalProtocolAddress(new ECPublicKey(senderIdentityKey), new DeviceId(senderDeviceId));
   }
